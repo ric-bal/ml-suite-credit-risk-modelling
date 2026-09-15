@@ -3,53 +3,36 @@ import pandas as pd
 from pathlib import Path
 import joblib
 import io
-import matplotlib.pyplot as plt
 import plotly.express as px
-import seaborn as sns
 
-#sns.set_style('darkgrid')
-# plt.rcParams.update({
-#     'savefig.facecolor': '#0E1117',
-#     'figure.facecolor': '#0E1117',
-#     'axes.facecolor': '#161B22',
-#     'axes.edgecolor': '#30363D',
-#     'axes.labelcolor': '#E6EDF3',
-#     'text.color': '#E6EDF3',
-#     'xtick.color': '#8B949E',
-#     'ytick.color': '#8B949E',
-#     'grid.color': '#30363D',
-#     'grid.alpha': 0.5,
-#     'font.size': 10
-# })
+from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_score, classification_report, roc_auc_score)
 
-st.set_page_config(layout='wide')
-cols = st.columns([2,3], border=True, gap='medium')
 
 if 'pred' not in st.session_state:
     st.session_state.pred = None
     st.session_state.input_df = {}
 
 data = {name: joblib.load(f'data/{name}.pkl') for name in ['df_og', 'df_model', 'X_train', 'X_test', 'y_train', 'y_test']}
+encoders = {col: joblib.load(f'encoders/{col}_encoder.pkl') for col in ['sex', 'housing', 'saving_accounts', 'checking_account']}
+models = {model.name.replace('_', ' ').replace('.pkl', ''): joblib.load(f'models/{model.name}') for model in list(Path('models/').glob('*.pkl'))}
+current_model = None
+
+st.set_page_config(layout='wide')
+cols = st.columns([2,3], border=True, gap='medium')
 
 with cols[0]:
-    encoders = {col: joblib.load(f'encoders/{col}_encoder.pkl') for col in ['sex', 'housing', 'saving_accounts', 'checking_account']}
-
     st.title('Credit Risk Prediction App')
     st.write('Enter applicant information to predict if the credit risk is good or bad')
 
-    model_paths = list(Path('models/').glob('*.pkl'))
-    model_dict = {}
-    for p in model_paths:
-        model_dict[p.name.replace('.pkl', '').replace('_', ' ')] = p
-
     col1, col2= st.columns([3,2])
     with col1:
-        model_name = st.selectbox('Current Model', list(model_dict.keys()))
+        model_name = st.selectbox('Current Model', list(models.keys()))
+        st.session_state.pred = None
     with col2:
         st.markdown('<br>', unsafe_allow_html=True)
         if st.button('Predict Risk', type='primary'):  
-            st.session_state.pred = joblib.load(model_dict[model_name]).predict(st.session_state.input_df)[0]
-
+            current_model = models[model_name]
+            st.session_state.pred = current_model.predict(st.session_state.input_df)[0]
 
     st.divider()
 
@@ -76,22 +59,66 @@ with cols[0]:
 
 
 with cols[1]:
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         'Results',
         'Data Overview',
-        'EDA'
+        'Exploratory Data Analysis',
+        'Feature Engineering'
     ])
 
     with tab1:
+        st.header(f'Current Model - {model_name}')
         if st.session_state.pred:
             st.success(f'Predicted Credit Risk: GOOD')
         elif st.session_state.pred != None:
             st.error(f'Predicted Credit Risk: BAD')
+        else:
+            st.info('Predicted Credit Risk: ')
+
+        scroll_container = st.container(height=740, border=True)
+        with scroll_container:
+            if st.session_state.pred != None:
+                X_train = data['X_train']
+                X_test = data['X_test']
+                y_train = data['y_train']
+                y_test = data['y_test']
+
+                y_pred = current_model.predict(X_test)
+
+                st.subheader('Results Summary')
+                score_dict = {
+                    'Accuracy': (accuracy_score(y_test, y_pred), 'Accuracy: the overall proportion of correct predictions (positive and negative) out of total predictions'),
+                    'Precision': (precision_score(y_test, y_pred), 'Precision: the proportion of positive predictions that were correct (minimizes false positives)'),
+                    'Recall': (recall_score(y_test, y_pred), 'Recall: the proportion of actual positive instances that the model managed to capture (minimizes false negatives)'),
+                    'F1-score': (f1_score(y_test, y_pred), 'F1-score: the harmonic mean of precision and recall, providing a single balanced score')
+                }
+                for score in score_dict:
+                    st.write(f'> {score_dict[score][1]}')
+                    st.code(f'{score}: {score_dict[score][0]}')
+                    
+                st.subheader('Score Table')
+                st.code(classification_report(y_test, y_pred))
+
+                st.subheader('ROC-AUC Score')
+                st.write('> How well the model is able to distinguish positive examples above negative examples across classification thresholds')
+                y_prob = current_model.predict_proba(X_test)[:, 1]
+                st.code(f'ROC-AUC: {roc_auc_score(y_test, y_prob)}')
+
+                st.subheader('Model Parameter Settings')
+                params_df = pd.DataFrame(list(current_model.get_params().items()), columns=["Parameter", "Value"])
+                params_df['Value'] = params_df['Value'].astype('str')#apply(lambda x: round(x, 2)).astype('str')
+                st.dataframe(params_df, width=500)
+
+                st.subheader('Model Feature Importance')
+                st.write('> Importance of each variable in determining the target within the fitted model')
+                importance_df = pd.DataFrame({'Feature': X_train.columns, 'Importance': current_model.feature_importances_}).sort_values("Importance", ascending=False)
+                importance_df['Importance'] = importance_df['Importance'].apply(lambda x: round(x, 2)).astype('str')
+                st.dataframe(importance_df, width=500)
 
     with tab2:
         df_model = data['df_model']
 
-        st.header('Data Summary')
+        st.header('Data Overview')
         st.text('(Post-EDA data)')
         st.text(f'Dataframe shape: {df_model.shape}')
         st.dataframe(df_model)
@@ -106,16 +133,15 @@ with cols[1]:
         st.dataframe(df_model.describe(include='all').T)
 
     with tab3:
-        scroll_container = st.container(height=1000, border=True)
+        st.header('Exploratory Data Analysis')
+        st.text('Exploring the quality and features of the unprocessed data to determine how to prepare the dataset for general machine learning methods.')
+        
+        scroll_container = st.container(height=780, border=True)
         with scroll_container:
 
             df_og = data['df_og']
             if 'unnamed:_0' in df_og.columns:
                 df_og.drop(columns='unnamed:_0', inplace=True)
-
-            st.header('Exploratory Data Analysis')
-            st.text('Explore the quality and features of the unprocessed data to determine how to prepare the dataset for general machine learning methods.')
-            st.divider()
 
             # original df
             st.subheader(f'Original dataframe shape: {df_og.shape}')
@@ -250,7 +276,7 @@ with cols[1]:
                 text_auto='.2f',
                 zmin=0,
                 zmax=1,
-                color_continuous_scale='Blues'
+                color_continuous_scale='teal'
                 
             )
             scroll_container.plotly_chart(
@@ -383,14 +409,13 @@ with cols[1]:
                     )
             st.divider()
 
+        with tab4:
+            st.header('Feature Engineering')
+            st.code("Chosen Features:  ['age', 'sex', 'job', 'housing', 'saving_accounts', 'checking_account', 'credit_amount', 'duration']")
+            st.dataframe(df_model)
 
-            st.write("Chosen Features: ['age', 'sex', 'job', 'housing', 'saving_accounts', 'checking_account', 'credit_amount', 'duration']")
+            st.subheader('Categorical Data Encoders')
 
-
-''' 
-TODO:
- - feature engineering
- - results tab
- - more models
-
-'''
+            for col in encoders:
+                st.code(f'{col} \nClasses: {encoders[col].classes_} \nEncoding: {encoders[col].transform(encoders[col].classes_)}')
+                
